@@ -92,12 +92,12 @@ instance JSON.ToJSON SchemaCache where
 showSummary :: SchemaCache -> Text
 showSummary (SchemaCache tbls rels routs reps mediaHdlrs tzs) =
   T.intercalate ", "
-  [ show (HM.size tbls)       <> " Relations"
-  , show (HM.size rels)       <> " Relationships"
-  , show (HM.size routs)      <> " Functions"
-  , show (HM.size reps)       <> " Domain Representations"
-  , show (HM.size mediaHdlrs) <> " Media Type Handlers"
-  , show (S.size tzs)         <> " Timezones"
+  [ T.pack (show (HM.size tbls))       <> " Relations"
+  , T.pack (show (HM.size rels))       <> " Relationships"
+  , T.pack (show (HM.size routs))      <> " Functions"
+  , T.pack (show (HM.size reps))       <> " Domain Representations"
+  , T.pack (show (HM.size mediaHdlrs)) <> " Media Type Handlers"
+  , T.pack (show (S.size tzs))         <> " Timezones"
   ]
 
 -- | A view foreign key or primary key dependency detected on its source table

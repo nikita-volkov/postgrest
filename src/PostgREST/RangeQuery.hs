@@ -114,8 +114,8 @@ contentRangeH lower upper total =
     where
       headerValue   = rangeString <> "/" <> totalString :: Text
       rangeString
-        | totalNotZero && fromInRange = show lower <> "-" <> show upper
+        | totalNotZero && fromInRange = T.pack (show lower) <> "-" <> T.pack (show upper)
         | otherwise = "*"
-      totalString   = maybe "*" show total
+      totalString   = maybe "*" (T.pack . show) total
       totalNotZero  = Just 0 /= total
       fromInRange   = lower <= upper
