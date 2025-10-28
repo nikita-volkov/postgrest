@@ -19,6 +19,7 @@ import           Data.List.NonEmpty         (toList)
 import qualified Data.Text                  as T
 import qualified Data.Text.Encoding         as T
 import qualified Hasql.Connection           as SQL
+import qualified Hasql.Errors               as SQL
 import qualified Hasql.Pool                 as SQL
 import qualified Hasql.Pool.Observation     as SQL
 import           Network.HTTP.Types.Status  (Status)

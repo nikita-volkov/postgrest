@@ -333,7 +333,7 @@ isConnEstablished appState = do
   if configDbChannelEnabled then -- if the listener is enabled, we can be sure the connection is up
     readIORef $ stateIsListenerOn appState
   else -- otherwise the only way to check the connection is to make a query
-    isRight <$> usePool appState (SQL.sql "SELECT 1")
+    isRight <$> usePool appState (SQL.script "SELECT 1")
 
 putIsListenerOn :: AppState -> Bool -> IO ()
 putIsListenerOn = atomicWriteIORef . stateIsListenerOn
