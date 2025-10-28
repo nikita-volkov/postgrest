@@ -65,7 +65,7 @@ class (ErrorBody a, JSON.ToJSON a) => PgrstError a where
   errorResponseFor err =
     let
       baseHeader = MediaType.toContentType MTApplicationJSON
-      cLHeader body = (,) "Content-Length" (show $ LBS.length body) :: Header
+      cLHeader body = (,) "Content-Length" (BS.pack $ show $ LBS.length body) :: Header
     in
     responseLBS (status err) (baseHeader : cLHeader (errorPayload err) : headers err) $ errorPayload err
 
@@ -224,12 +224,12 @@ instance ErrorBody ApiRequestError where
        NegativeLimit           -> "Limit should be greater than or equal to zero."
        LowerGTUpper            -> "The lower boundary must be lower than or equal to the upper boundary in the Range header."
        OutOfBounds lower total -> JSON.String $ "An offset of " <> lower <> " was requested, but there are only " <> total <> " rows."
-  details (SingularityError n) = Just $ JSON.String $ T.unwords ["The result contains", show n, "rows"]
+  details (SingularityError n) = Just $ JSON.String $ T.unwords ["The result contains", T.pack (show n), "rows"]
   details (RelatedOrderNotToOne origin target) = Just $ JSON.String $ "'" <> origin <> "' and '" <> target <> "' do not form a many-to-one or one-to-one relationship"
   details (UnacceptableFilter _)      = Just "Only is null or not is null filters are allowed on embedded resources"
   details (PGRSTParseError raiseErr) = Just $ JSON.String $ pgrstParseErrorDetails raiseErr
   details (InvalidPreferences prefs) = Just $ JSON.String $ T.decodeUtf8 ("Invalid preferences: " <> BS.intercalate ", " prefs)
-  details (MaxAffectedViolationError n) = Just $ JSON.String $ T.unwords ["The query affects", show n, "rows"]
+  details (MaxAffectedViolationError n) = Just $ JSON.String $ T.unwords ["The query affects", T.pack (show n), "rows"]
   details (NotImplemented details') = Just $ JSON.String details'
 
   details _ = Nothing
@@ -794,7 +794,7 @@ instance ErrorBody JwtError where
   message JwtSecretMissing = "Server lacks JWT secret"
   message (JwtDecodeErr e) = case e of
     EmptyAuthHeader        -> "Empty JWT is sent in Authorization header"
-    UnexpectedParts n      -> "Expected 3 parts in JWT; got " <> show n
+    UnexpectedParts n      -> "Expected 3 parts in JWT; got " <> T.pack (show n)
     KeyError _             -> "No suitable key or wrong key type"
     BadAlgorithm _         -> "Wrong or unsupported encoding algorithm"
     BadCrypto              -> "JWT cryptographic operation failed"
@@ -822,7 +822,7 @@ instance ErrorBody JwtError where
 
 invalidTokenHeader :: Text -> Header
 invalidTokenHeader m =
-  ("WWW-Authenticate", "Bearer error=\"invalid_token\", " <> "error_description=" <> encodeUtf8 (show m))
+  ("WWW-Authenticate", "Bearer error=\"invalid_token\", " <> "error_description=" <> encodeUtf8 m)
 
 requiredTokenHeader :: Header
 requiredTokenHeader = ("WWW-Authenticate", "Bearer")
