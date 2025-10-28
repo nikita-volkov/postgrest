@@ -33,6 +33,7 @@ module PostgREST.AppState
 import qualified Data.ByteString.Char8      as BS
 import           Data.Either.Combinators    (whenLeft)
 import qualified Data.Text                  as T (unpack)
+import qualified Hasql.Errors               as SQL
 import qualified Hasql.Pool                 as SQL
 import qualified Hasql.Pool.Config          as SQL
 import qualified Hasql.Session              as SQL
@@ -224,46 +225,50 @@ usePool AppState{stateObserver=observer, stateMainThreadId=mainThreadId, ..} ses
     SQL.AcquisitionTimeoutUsageError ->
       observer $ PoolAcqTimeoutObs SQL.AcquisitionTimeoutUsageError
     err@(SQL.ConnectionUsageError e) ->
-      let failureMessage = BS.unpack $ fromMaybe mempty e in
+      let failureMessage = T.unpack $ SQL.toErrorMessage e in
       when (("FATAL:  password authentication failed" `isInfixOf` failureMessage) || ("no password supplied" `isInfixOf` failureMessage)) $ do
         observer $ ExitDBFatalError ServerAuthError err
         killThread mainThreadId
-    err@(SQL.SessionUsageError (SQL.QueryError tpl _ (SQL.ResultError resultErr))) -> do
-      case resultErr of
-        SQL.UnexpectedResult{} -> do
-          observer $ ExitDBFatalError ServerPgrstBug err
-          killThread mainThreadId
-        SQL.RowError{} -> do
-          observer $ ExitDBFatalError ServerPgrstBug err
-          killThread mainThreadId
-        SQL.UnexpectedAmountOfRows{} -> do
-          observer $ ExitDBFatalError ServerPgrstBug err
-          killThread mainThreadId
-        -- Check for a syntax error (42601 is the pg code) only for queries that don't have `WITH pgrst_source` as prefix.
-        -- This would mean the error is on our schema cache queries, so we treat it as fatal.
-        -- TODO have a better way to mark this as a schema cache query
-        SQL.ServerError "42601" _ _ _ _ ->
-          unless ("WITH pgrst_source" `BS.isPrefixOf` tpl) $ do
-            observer $ ExitDBFatalError ServerPgrstBug err
-            killThread mainThreadId
-        -- Check for a "prepared statement <name> already exists" error (Code 42P05: duplicate_prepared_statement).
-        -- This would mean that a connection pooler in transaction mode is being used
-        -- while prepared statements are enabled in the PostgREST configuration,
-        -- both of which are incompatible with each other.
-        SQL.ServerError "42P05" _ _ _ _ -> do
-          observer $ ExitDBFatalError ServerError42P05 err
-          killThread mainThreadId
-        -- Check for a "transaction blocks not allowed in statement pooling mode" error (Code 08P01: protocol_violation).
-        -- This would mean that a connection pooler in statement mode is being used which is not supported in PostgREST.
-        SQL.ServerError "08P01" "transaction blocks not allowed in statement pooling mode" _ _ _ -> do
-          observer $ ExitDBFatalError ServerError08P01 err
-          killThread mainThreadId
-        SQL.ServerError{} ->
-          when (Error.status (Error.PgError False err) >= HTTP.status500) $
-            observer $ QueryErrorCodeHighObs err
-    err@(SQL.SessionUsageError (SQL.QueryError _ _ (SQL.ClientError _))) ->
-      -- An error on the client-side, usually indicates problems wth connection
-        observer $ QueryErrorCodeHighObs err
+    err@(SQL.SessionUsageError sessionError) -> do
+      case sessionError of
+        SQL.StatementSessionError _ _ sql _ _ statementError -> do
+          case statementError of
+            SQL.UnexpectedResultStatementError{} -> do
+              observer $ ExitDBFatalError ServerPgrstBug err
+              killThread mainThreadId
+            SQL.RowStatementError{} -> do
+              observer $ ExitDBFatalError ServerPgrstBug err
+              killThread mainThreadId
+            SQL.UnexpectedRowCountStatementError{} -> do
+              observer $ ExitDBFatalError ServerPgrstBug err
+              killThread mainThreadId
+            -- Check for a syntax error (42601 is the pg code) only for queries that don't have `WITH pgrst_source` as prefix.
+            -- This would mean the error is on our schema cache queries, so we treat it as fatal.
+            -- TODO have a better way to mark this as a schema cache query
+            SQL.ServerStatementError (SQL.ServerError "42601" _ _ _ _) ->
+              unless ("WITH pgrst_source" `T.isPrefixOf` sql) $ do
+                observer $ ExitDBFatalError ServerPgrstBug err
+                killThread mainThreadId
+            -- Check for a "prepared statement <name> already exists" error (Code 42P05: duplicate_prepared_statement).
+            -- This would mean that a connection pooler in transaction mode is being used
+            -- while prepared statements are enabled in the PostgREST configuration,
+            -- both of which are incompatible with each other.
+            SQL.ServerStatementError (SQL.ServerError "42P05" _ _ _ _) -> do
+              observer $ ExitDBFatalError ServerError42P05 err
+              killThread mainThreadId
+            -- Check for a "transaction blocks not allowed in statement pooling mode" error (Code 08P01: protocol_violation).
+            -- This would mean that a connection pooler in statement mode is being used which is not supported in PostgREST.
+            SQL.ServerStatementError (SQL.ServerError "08P01" msg _ _ _) | msg == "transaction blocks not allowed in statement pooling mode" -> do
+              observer $ ExitDBFatalError ServerError08P01 err
+              killThread mainThreadId
+            SQL.ServerStatementError{} ->
+              when (Error.status (Error.PgError False err) >= HTTP.status500) $
+                observer $ QueryErrorCodeHighObs err
+            _ -> return ()
+        SQL.ConnectionSessionError{} ->
+          -- An error on the client-side, usually indicates problems with connection
+          observer $ QueryErrorCodeHighObs err
+        _ -> return ()
     )
 
   return res

@@ -29,6 +29,7 @@ import qualified Data.HashMap.Strict       as HM
 import qualified Data.Map.Internal         as M
 import qualified Data.Text                 as T
 import qualified Data.Text.Encoding        as T
+import qualified Hasql.Errors              as SQL
 import qualified Hasql.Pool                as SQL
 import qualified Hasql.Session             as SQL
 import qualified Network.HTTP.Types.Status as HTTP
@@ -495,8 +496,8 @@ type Authenticated = Bool
 instance PgrstError PgError where
   status (PgError authed usageError) = pgErrorStatus authed usageError
 
-  headers (PgError _ (SQL.SessionUsageError (SQL.QueryError _ _ (SQL.ResultError (SQL.ServerError "PGRST" m d _ _p))))) =
-    case parseRaisePGRST m d of
+  headers (PgError _ (SQL.SessionUsageError (SQL.StatementSessionError _ _ _ _ _ (SQL.ServerStatementError (SQL.ServerError "PGRST" m d _ _p))))) =
+    case parseRaisePGRST (T.encodeUtf8 m) (fmap T.encodeUtf8 d) of
       Right (_, r) -> map intoHeader (M.toList $ getHeaders r)
       Left e       -> headers e
     where
@@ -525,120 +526,169 @@ instance JSON.ToJSON SQL.UsageError where
     (code err) (message err) (details err) (hint err)
 
 instance ErrorBody SQL.UsageError where
-  code    (SQL.ConnectionUsageError _)                   = "PGRST000"
-  code    (SQL.SessionUsageError (SQL.QueryError _ _ e)) = code e
-  code    SQL.AcquisitionTimeoutUsageError               = "PGRST003"
+  code    (SQL.ConnectionUsageError _)      = "PGRST000"
+  code    (SQL.SessionUsageError e)         = code e
+  code    SQL.AcquisitionTimeoutUsageError  = "PGRST003"
 
-  message (SQL.ConnectionUsageError _) = "Database connection error. Retrying the connection."
-  message (SQL.SessionUsageError (SQL.QueryError _ _ e)) = message e
+  message (SQL.ConnectionUsageError e) = SQL.toErrorMessage e
+  message (SQL.SessionUsageError e)    = message e
   message SQL.AcquisitionTimeoutUsageError = "Timed out acquiring connection from connection pool."
 
-  details (SQL.ConnectionUsageError e) = JSON.String . T.decodeUtf8 <$> e
-  details (SQL.SessionUsageError (SQL.QueryError _ _ e)) = details e
-  details SQL.AcquisitionTimeoutUsageError               = Nothing
+  details (SQL.ConnectionUsageError e) = Just $ JSON.String $ SQL.toErrorMessage e
+  details (SQL.SessionUsageError e)    = details e
+  details SQL.AcquisitionTimeoutUsageError = Nothing
 
-  hint    (SQL.ConnectionUsageError _)                   = Nothing
-  hint    (SQL.SessionUsageError (SQL.QueryError _ _ e)) = hint e
-  hint    SQL.AcquisitionTimeoutUsageError               = Nothing
+  hint    (SQL.ConnectionUsageError _)     = Nothing
+  hint    (SQL.SessionUsageError e)        = hint e
+  hint    SQL.AcquisitionTimeoutUsageError = Nothing
 
-instance JSON.ToJSON SQL.CommandError where
+instance JSON.ToJSON SQL.SessionError where
   toJSON err = toJsonPgrstError
     (code err) (message err) (details err) (hint err)
 
-instance ErrorBody SQL.CommandError where
+instance ErrorBody SQL.SessionError where
+  code (SQL.StatementSessionError _ _ _ _ _ e) = code e
+  code (SQL.ScriptSessionError _ e)            = code e
+  code (SQL.ConnectionSessionError _)          = "PGRST001"
+  code (SQL.DriverSessionError _)              = "PGRSTX00"
+  code (SQL.MissingTypesSessionError _)        = "PGRSTX01"
+
+  message (SQL.StatementSessionError _ _ _ _ _ e) = message e
+  message (SQL.ScriptSessionError _ e)            = message e
+  message (SQL.ConnectionSessionError _)          = "Database client error. Retrying the connection."
+  message (SQL.DriverSessionError msg)            = msg
+  message (SQL.MissingTypesSessionError types)    = "Missing database types: " <> T.pack (show types)
+
+  details (SQL.StatementSessionError _ _ _ _ _ e) = details e
+  details (SQL.ScriptSessionError _ e)            = details e
+  details (SQL.ConnectionSessionError msg)        = Just $ JSON.String msg
+  details (SQL.DriverSessionError msg)            = Just $ JSON.String msg
+  details (SQL.MissingTypesSessionError _)        = Nothing
+
+  hint (SQL.StatementSessionError _ _ _ _ _ e) = hint e
+  hint (SQL.ScriptSessionError _ e)            = hint e
+  hint (SQL.ConnectionSessionError _)          = Nothing
+  hint (SQL.DriverSessionError _)              = Nothing
+  hint (SQL.MissingTypesSessionError _)        = Nothing
+
+instance JSON.ToJSON SQL.StatementError where
+  toJSON err = toJsonPgrstError
+    (code err) (message err) (details err) (hint err)
+
+instance ErrorBody SQL.StatementError where
   -- Special error raised with code PGRST, to allow full response control
-  code (SQL.ResultError (SQL.ServerError "PGRST" m d _ _)) =
-    case parseRaisePGRST m d of
+  code (SQL.ServerStatementError (SQL.ServerError "PGRST" m d _ _)) =
+    case parseRaisePGRST (T.encodeUtf8 m) (fmap T.encodeUtf8 d) of
       Right (r, _) -> getCode r
       Left e       -> code e
-  code (SQL.ResultError (SQL.ServerError c _ _ _ _)) = T.decodeUtf8 c
+  code (SQL.ServerStatementError (SQL.ServerError c _ _ _ _)) = c
 
-  code (SQL.ResultError _) = "PGRSTX00" -- Internal Error
+  code (SQL.UnexpectedResultStatementError _) = "PGRSTX00" -- Internal Error
+  code (SQL.UnexpectedRowCountStatementError _ _ _) = "PGRSTX00"
+  code (SQL.UnexpectedAmountOfColumnsStatementError _ _) = "PGRSTX00"
+  code (SQL.UnexpectedColumnTypeStatementError _ _ _) = "PGRSTX00"
+  code (SQL.RowStatementError _ _) = "PGRSTX00"
 
-  code (SQL.ClientError _) = "PGRST001"
-
-  message (SQL.ResultError (SQL.ServerError "PGRST" m d _ _)) =
-    case parseRaisePGRST m d of
+  message (SQL.ServerStatementError (SQL.ServerError "PGRST" m d _ _)) =
+    case parseRaisePGRST (T.encodeUtf8 m) (fmap T.encodeUtf8 d) of
       Right (r, _) -> getMessage r
       Left e       -> message e
-  message (SQL.ResultError (SQL.ServerError _ m _ _ _)) = T.decodeUtf8 m
-  message (SQL.ResultError resultError) = show resultError -- We never really return this error, because we kill pgrst thread early in App.hs
-  message (SQL.ClientError _) = "Database client error. Retrying the connection."
+  message (SQL.ServerStatementError (SQL.ServerError _ m _ _ _)) = m
+  message (SQL.UnexpectedResultStatementError msg) = msg
+  message (SQL.UnexpectedRowCountStatementError _ _ _) = "Unexpected amount of rows"
+  message (SQL.UnexpectedAmountOfColumnsStatementError _ _) = "Unexpected amount of columns"
+  message (SQL.UnexpectedColumnTypeStatementError _ _ _) = "Unexpected column type"
+  message (SQL.RowStatementError _ rowErr) = SQL.toErrorMessage rowErr
 
-  details (SQL.ResultError (SQL.ServerError "PGRST" m d _ _)) =
-    case parseRaisePGRST m d of
+  details (SQL.ServerStatementError (SQL.ServerError "PGRST" m d _ _)) =
+    case parseRaisePGRST (T.encodeUtf8 m) (fmap T.encodeUtf8 d) of
       Right (r, _) -> JSON.String <$> getDetails r
       Left e       -> details e
-  details (SQL.ResultError (SQL.ServerError _ _ d _ _)) = JSON.String . T.decodeUtf8 <$> d
-  details (SQL.ClientError d) = JSON.String . T.decodeUtf8 <$> d
+  details (SQL.ServerStatementError (SQL.ServerError _ _ d _ _)) = JSON.String <$> d
+  details (SQL.UnexpectedResultStatementError msg) = Just $ JSON.String msg
+  details (SQL.UnexpectedRowCountStatementError minRows maxRows actual) = 
+    Just $ JSON.String $ "Expected " <> show minRows <> " to " <> show maxRows <> " rows, got " <> show actual
+  details (SQL.UnexpectedAmountOfColumnsStatementError expected actual) = 
+    Just $ JSON.String $ "Expected " <> show expected <> " columns, got " <> show actual
+  details (SQL.UnexpectedColumnTypeStatementError colIdx expectedOid actualOid) = 
+    Just $ JSON.String $ "Column " <> show colIdx <> ": expected OID " <> show expectedOid <> ", got " <> show actualOid
+  details (SQL.RowStatementError rowIdx _) = Just $ JSON.String $ "Error in row " <> show rowIdx
 
-  details _ = Nothing
-
-  hint (SQL.ResultError (SQL.ServerError "PGRST" m d _ _p)) =
-    case parseRaisePGRST m d of
+  hint (SQL.ServerStatementError (SQL.ServerError "PGRST" m d _ _p)) =
+    case parseRaisePGRST (T.encodeUtf8 m) (fmap T.encodeUtf8 d) of
       Right (r, _) -> JSON.String <$> getHint r
       Left e       -> hint e
-  hint (SQL.ResultError (SQL.ServerError _ _ _ h _)) = JSON.String . T.decodeUtf8 <$> h
-
-  hint _                   = Nothing
+  hint (SQL.ServerStatementError (SQL.ServerError _ _ _ h _)) = JSON.String <$> h
+  hint _ = Nothing
 
 
 pgErrorStatus :: Bool -> SQL.UsageError -> HTTP.Status
 pgErrorStatus _      (SQL.ConnectionUsageError _) = HTTP.status503
 pgErrorStatus _      SQL.AcquisitionTimeoutUsageError = HTTP.status504
-pgErrorStatus _      (SQL.SessionUsageError (SQL.QueryError _ _ (SQL.ClientError _)))      = HTTP.status503
-pgErrorStatus authed (SQL.SessionUsageError (SQL.QueryError _ _ (SQL.ResultError rError))) =
-  case rError of
-    (SQL.ServerError c m d _ _) ->
-      case BS.unpack c of
-        '0':'8':_ -> HTTP.status503 -- pg connection err
-        '0':'9':_ -> HTTP.status500 -- triggered action exception
-        '0':'L':_ -> HTTP.status403 -- invalid grantor
-        '0':'P':_ -> HTTP.status403 -- invalid role specification
-        "23503"   -> HTTP.status409 -- foreign_key_violation
-        "23505"   -> HTTP.status409 -- unique_violation
-        "25006"   -> HTTP.status405 -- read_only_sql_transaction
-        "21000"   -> -- cardinality_violation
-          if BS.isSuffixOf "requires a WHERE clause" m
-            then HTTP.status400 -- special case for pg-safeupdate, which we consider as client error
-            else HTTP.status500 -- generic function or view server error, e.g. "more than one row returned by a subquery used as an expression"
-        "22023"   -> -- invalid_parameter_value. Catch nonexistent role error, see https://github.com/PostgREST/postgrest/issues/3601
-          if BS.isPrefixOf "role" m && BS.isSuffixOf "does not exist" m
-            then HTTP.status401 -- role in jwt does not exist
-            else HTTP.status400
-        '2':'5':_ -> HTTP.status500 -- invalid tx state
-        '2':'8':_ -> HTTP.status403 -- invalid auth specification
-        '2':'D':_ -> HTTP.status500 -- invalid tx termination
-        '3':'8':_ -> HTTP.status500 -- external routine exception
-        '3':'9':_ -> HTTP.status500 -- external routine invocation
-        '3':'B':_ -> HTTP.status500 -- savepoint exception
-        '4':'0':_ -> HTTP.status500 -- tx rollback
-        "53400"   -> HTTP.status500 -- config limit exceeded
-        '5':'3':_ -> HTTP.status503 -- insufficient resources
-        '5':'4':_ -> HTTP.status500 -- too complex
-        '5':'5':_ -> HTTP.status500 -- obj not on prereq state
-        "57P01"   -> HTTP.status503 -- terminating connection due to administrator command
-        '5':'7':_ -> HTTP.status500 -- operator intervention
-        '5':'8':_ -> HTTP.status500 -- system error
-        'F':'0':_ -> HTTP.status500 -- conf file error
-        'H':'V':_ -> HTTP.status500 -- foreign data wrapper error
-        "P0001"   -> HTTP.status400 -- default code for "raise"
-        'P':'0':_ -> HTTP.status500 -- PL/pgSQL Error
-        'X':'X':_ -> HTTP.status500 -- internal Error
-        "42883"-> if BS.isPrefixOf "function xmlagg(" m
-          then HTTP.status406
-          else HTTP.status404 -- undefined function
-        "42P01"   -> HTTP.status404 -- undefined table
-        "42P17"   -> HTTP.status500 -- infinite recursion
-        "42501"   -> if authed then HTTP.status403 else HTTP.status401 -- insufficient privilege
-        'P':'T':n -> fromMaybe HTTP.status500 (HTTP.mkStatus <$> readMaybe n <*> pure m)
-        "PGRST"   ->
-          case parseRaisePGRST m d of
-            Right (_, r) -> maybe (toEnum $ getStatus r) (HTTP.mkStatus (getStatus r) . T.encodeUtf8) (getStatusText r)
-            Left e       -> status e
-        _         -> HTTP.status400
+pgErrorStatus _      (SQL.SessionUsageError (SQL.ConnectionSessionError _)) = HTTP.status503
+pgErrorStatus authed (SQL.SessionUsageError (SQL.StatementSessionError _ _ _ _ _ statementError)) =
+  case statementError of
+    SQL.ServerStatementError serverError ->
+      serverErrorStatus authed serverError
+    SQL.UnexpectedResultStatementError{} -> HTTP.status500
+    SQL.UnexpectedRowCountStatementError{} -> HTTP.status500
+    SQL.UnexpectedAmountOfColumnsStatementError{} -> HTTP.status500
+    SQL.UnexpectedColumnTypeStatementError{} -> HTTP.status500
+    SQL.RowStatementError{} -> HTTP.status500
+pgErrorStatus authed (SQL.SessionUsageError (SQL.ScriptSessionError _ serverError)) =
+  serverErrorStatus authed serverError
+pgErrorStatus _ (SQL.SessionUsageError (SQL.DriverSessionError _)) = HTTP.status500
+pgErrorStatus _ (SQL.SessionUsageError (SQL.MissingTypesSessionError _)) = HTTP.status500
 
-    _                       -> HTTP.status500
+serverErrorStatus :: Bool -> SQL.ServerError -> HTTP.Status
+serverErrorStatus authed (SQL.ServerError c m d _ _) =
+  case T.unpack c of
+    '0':'8':_ -> HTTP.status503 -- pg connection err
+    '0':'9':_ -> HTTP.status500 -- triggered action exception
+    '0':'L':_ -> HTTP.status403 -- invalid grantor
+    '0':'P':_ -> HTTP.status403 -- invalid role specification
+    "23503"   -> HTTP.status409 -- foreign_key_violation
+    "23505"   -> HTTP.status409 -- unique_violation
+    "25006"   -> HTTP.status405 -- read_only_sql_transaction
+    "21000"   -> -- cardinality_violation
+      if T.isSuffixOf "requires a WHERE clause" m
+        then HTTP.status400 -- special case for pg-safeupdate, which we consider as client error
+        else HTTP.status500 -- generic function or view server error, e.g. "more than one row returned by a subquery used as an expression"
+    "22023"   -> -- invalid_parameter_value. Catch nonexistent role error, see https://github.com/PostgREST/postgrest/issues/3601
+      if T.isPrefixOf "role" m && T.isSuffixOf "does not exist" m
+        then HTTP.status401 -- role in jwt does not exist
+        else HTTP.status400
+    '2':'5':_ -> HTTP.status500 -- invalid tx state
+    '2':'8':_ -> HTTP.status403 -- invalid auth specification
+    '2':'D':_ -> HTTP.status500 -- invalid tx termination
+    '3':'8':_ -> HTTP.status500 -- external routine exception
+    '3':'9':_ -> HTTP.status500 -- external routine invocation
+    '3':'B':_ -> HTTP.status500 -- savepoint exception
+    '4':'0':_ -> HTTP.status500 -- tx rollback
+    "53400"   -> HTTP.status500 -- config limit exceeded
+    '5':'3':_ -> HTTP.status503 -- insufficient resources
+    '5':'4':_ -> HTTP.status500 -- too complex
+    '5':'5':_ -> HTTP.status500 -- obj not on prereq state
+    "57P01"   -> HTTP.status503 -- terminating connection due to administrator command
+    '5':'7':_ -> HTTP.status500 -- operator intervention
+    '5':'8':_ -> HTTP.status500 -- system error
+    'F':'0':_ -> HTTP.status500 -- conf file error
+    'H':'V':_ -> HTTP.status500 -- foreign data wrapper error
+    "P0001"   -> HTTP.status400 -- default code for "raise"
+    'P':'0':_ -> HTTP.status500 -- PL/pgSQL Error
+    'X':'X':_ -> HTTP.status500 -- internal Error
+    "42883"-> if T.isPrefixOf "function xmlagg(" m
+      then HTTP.status406
+      else HTTP.status404 -- undefined function
+    "42P01"   -> HTTP.status404 -- undefined table
+    "42P17"   -> HTTP.status500 -- infinite recursion
+    "42501"   -> if authed then HTTP.status403 else HTTP.status401 -- insufficient privilege
+    'P':'T':n -> fromMaybe HTTP.status500 (HTTP.mkStatus <$> readMaybe n <*> pure (T.encodeUtf8 m))
+    "PGRST"   ->
+      case parseRaisePGRST (T.encodeUtf8 m) (fmap T.encodeUtf8 d) of
+        Right (_, r) -> maybe (toEnum $ getStatus r) (HTTP.mkStatus (getStatus r) . T.encodeUtf8) (getStatusText r)
+        Left e       -> status e
+    _         -> HTTP.status400
 
 
 data Error
