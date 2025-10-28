@@ -139,4 +139,4 @@ renderSnippet snippet =
       decoder = HD.noResult -- unused
       prepared = False  -- unused
   in
-    sql
+    encodeUtf8 sql
