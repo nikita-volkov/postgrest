@@ -105,20 +105,20 @@ observationMessage = \case
   SchemaCacheLoadedObs resultTime ->
     "Schema cache loaded in " <> showMillis resultTime <> " milliseconds"
   ConnectionRetryObs delay ->
-    "Attempting to reconnect to the database in " <> (show delay::Text) <> " seconds..."
+    "Attempting to reconnect to the database in " <> T.pack (show delay) <> " seconds..."
   QueryPgVersionError usageErr ->
     "Failed to query the PostgreSQL version. " <> jsonMessage usageErr
   DBListenStart channel -> do
-    "Listening for database notifications on the " <> show channel <> " channel"
+    "Listening for database notifications on the " <> channel <> " channel"
   DBListenFail channel listenErr ->
-    "Failed listening for database notifications on the " <> show channel <> " channel. " <>
+    "Failed listening for database notifications on the " <> channel <> " channel. " <>
       either showListenerConnError showListenerException listenErr
   DBListenRetry delay ->
-    "Retrying listening for database notifications in " <> (show delay::Text) <> " seconds..."
+    "Retrying listening for database notifications in " <> T.pack (show delay) <> " seconds..."
   DBListenerGotSCacheMsg channel ->
-    "Received a schema cache reload message on the " <> show channel <> " channel"
+    "Received a schema cache reload message on the " <> T.decodeUtf8 channel <> " channel"
   DBListenerGotConfigMsg channel ->
-    "Received a config reload message on the " <> show channel <> " channel"
+    "Received a config reload message on the " <> T.decodeUtf8 channel <> " channel"
   QueryObs{} ->
     mempty -- TODO pending refactor: The logic for printing the query cannot be done here. Join the observationMessage function into observationLogger to avoid this mempty.
   ConfigReadErrorObs usageErr ->
@@ -132,14 +132,14 @@ observationMessage = \case
   ConfigSucceededObs ->
      "Config reloaded"
   PoolInit poolSize ->
-     "Connection Pool initialized with a maximum size of " <> show poolSize <> " connections"
+     "Connection Pool initialized with a maximum size of " <> T.pack (show poolSize) <> " connections"
   PoolAcqTimeoutObs usageErr ->
     jsonMessage usageErr
   HasqlPoolObs (SQL.ConnectionObservation uuid status) ->
-    "Connection " <> show uuid <> (
+    "Connection " <> T.pack (show uuid) <> (
       case status of
         SQL.ConnectingConnectionStatus   -> " is being established"
-        SQL.ReadyForUseConnectionStatus  -> " is available"
+        SQL.ReadyForUseConnectionStatus _  -> " is available"
         SQL.InUseConnectionStatus        -> " is used"
         SQL.TerminatedConnectionStatus reason -> " is terminated due to " <> case reason of
           SQL.AgingConnectionTerminationReason          -> "max lifetime"
@@ -163,11 +163,11 @@ observationMessage = \case
 
 
     showListenerConnError :: SQL.ConnectionError -> Text
-    showListenerConnError = maybe "Connection error" (showOnSingleLine '\t' . T.decodeUtf8)
+    showListenerConnError = showOnSingleLine '\t' . SQL.toErrorMessage
 
     showListenerException :: Either SomeException () -> Text
     showListenerException (Right _) = "Failed getting notifications" -- should not happen as the listener will never finish (hasql-notifications uses `forever` internally) with a Right result
-    showListenerException (Left e)  = showOnSingleLine '\t' $ show e
+    showListenerException (Left e)  = showOnSingleLine '\t' $ T.pack (show e)
 
 
 showOnSingleLine :: Char -> Text -> Text
