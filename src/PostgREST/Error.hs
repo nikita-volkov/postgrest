@@ -607,12 +607,12 @@ instance ErrorBody SQL.StatementError where
   details (SQL.ServerStatementError (SQL.ServerError _ _ d _ _)) = JSON.String <$> d
   details (SQL.UnexpectedResultStatementError msg) = Just $ JSON.String msg
   details (SQL.UnexpectedRowCountStatementError minRows maxRows actual) = 
-    Just $ JSON.String $ "Expected " <> show minRows <> " to " <> show maxRows <> " rows, got " <> show actual
+    Just $ JSON.String $ "Expected " <> T.pack (show minRows) <> " to " <> T.pack (show maxRows) <> " rows, got " <> T.pack (show actual)
   details (SQL.UnexpectedAmountOfColumnsStatementError expected actual) = 
-    Just $ JSON.String $ "Expected " <> show expected <> " columns, got " <> show actual
+    Just $ JSON.String $ "Expected " <> T.pack (show expected) <> " columns, got " <> T.pack (show actual)
   details (SQL.UnexpectedColumnTypeStatementError colIdx expectedOid actualOid) = 
-    Just $ JSON.String $ "Column " <> show colIdx <> ": expected OID " <> show expectedOid <> ", got " <> show actualOid
-  details (SQL.RowStatementError rowIdx _) = Just $ JSON.String $ "Error in row " <> show rowIdx
+    Just $ JSON.String $ "Column " <> T.pack (show colIdx) <> ": expected OID " <> T.pack (show expectedOid) <> ", got " <> T.pack (show actualOid)
+  details (SQL.RowStatementError rowIdx _) = Just $ JSON.String $ "Error in row " <> T.pack (show rowIdx)
 
   hint (SQL.ServerStatementError (SQL.ServerError "PGRST" m d _ _p)) =
     case parseRaisePGRST (T.encodeUtf8 m) (fmap T.encodeUtf8 d) of
